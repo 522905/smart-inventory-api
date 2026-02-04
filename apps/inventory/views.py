@@ -71,6 +71,15 @@ class BatchViewSet(viewsets.ModelViewSet):
             return BatchCreateSerializer
         return BatchSerializer
 
+    def create(self, request, *args, **kwargs):
+        """Override create to return full BatchSerializer response."""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        batch = serializer.save()
+        # Return full batch data with product info
+        response_serializer = BatchSerializer(batch)
+        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+
     def get_queryset(self):
         queryset = super().get_queryset()
         user = self.request.user

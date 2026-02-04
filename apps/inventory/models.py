@@ -108,12 +108,13 @@ class InventoryTransaction(models.Model):
     def __str__(self):
         return f"{self.type} - {self.quantity} - {self.batch.product.name}"
 
-    def save(self, *args, **kwargs):
+    def save(self, *args, skip_quantity_update=False, **kwargs):
         # Update batch quantity
         is_new = self._state.adding
         super().save(*args, **kwargs)
 
-        if is_new:
+        # Skip quantity update for initial stock (already set on batch creation)
+        if is_new and not skip_quantity_update:
             if self.type == 'IN':
                 self.batch.quantity += self.quantity
             elif self.type == 'OUT':

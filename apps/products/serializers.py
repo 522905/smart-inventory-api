@@ -26,13 +26,16 @@ class ProductSerializer(serializers.ModelSerializer):
 
 
 class ProductCreateSerializer(serializers.ModelSerializer):
+    business_id = serializers.UUIDField(source='business.id', read_only=True)
+    created_at = serializers.DateTimeField(read_only=True)
+
     class Meta:
         model = Product
         fields = [
-            'id', 'category_id', 'name', 'sku', 'barcode',
-            'unit', 'min_stock', 'is_active'
+            'id', 'business_id', 'category_id', 'name', 'sku', 'barcode',
+            'unit', 'min_stock', 'is_active', 'created_at'
         ]
-        read_only_fields = ['id']
+        read_only_fields = ['id', 'business_id', 'created_at']
 
     def create(self, validated_data):
         validated_data['business'] = self.context['request'].user.business
