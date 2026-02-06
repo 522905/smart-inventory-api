@@ -221,3 +221,155 @@ class LabelSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         validated_data['printed_by'] = self.context['request'].user
         return super().create(validated_data)
+
+
+class QuickInSerializer(serializers.Serializer):
+    """
+    Quick Stock In: Create batch + record inward in one call.
+    Simplified workflow for receiving stock.
+    """
+    product_id = serializers.UUIDField()
+    batch_number = serializers.CharField(max_length=100)
+    quantity = serializers.IntegerField(min_value=1)
+    cost_price = serializers.DecimalField(max_digits=12, decimal_places=2)
+    sell_price = serializers.DecimalField(max_digits=12, decimal_places=2, required=False, allow_null=True)
+    expiry_date = serializers.DateField(required=False, allow_null=True)
+    manufacture_date = serializers.DateField(required=False, allow_null=True)
+    location_id = serializers.UUIDField(required=False, allow_null=True)
+    reference = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_product_id(self, value):
+        from apps.products.models import Product
+        user = self.context['request'].user
+        try:
+            product = Product.objects.get(id=value, business=user.business)
+            return value
+        except Product.DoesNotExist:
+            raise serializers.ValidationError('Product not found')
+
+    def create(self, validated_data):
+        from apps.business.models import Location
+        from apps.products.models import Product
+
+        user = self.context['request'].user
+
+        # Get product
+        product = Product.objects.get(id=validated_data['product_id'])
+
+        # Get or create default location
+        location_id = validated_data.get('location_id')
+        if location_id:
+            try:
+                location = Location.objects.get(id=location_id, business=user.business)
+            except Location.DoesNotExist:
+                raise serializers.ValidationError({'location_id': 'Location not found'})
+        else:
+            location = Location.objects.filter(business=user.business, is_default=True).first()
+            if not location:
+                location = Location.objects.create(
+                    business=user.business,
+                    name='Main Warehouse',
+                    is_default=True
+                )
+
+        # Create batch with initial quantity
+        with transaction.atomic():
+            batch = Batch.objects.create(
+                product=product,
+                location=location,
+                batch_number=validated_data['batch_number'],
+                quantity=validated_data['quantity'],
+                cost_price=validated_data['cost_price'],
+                sell_price=validated_data.get('sell_price'),
+                expiry_date=validated_data.get('expiry_date'),
+                manufacture_date=validated_data.get('manufacture_date'),
+            )
+
+            # Create transaction record (skip auto quantity update since we set it directly)
+            txn = InventoryTransaction(
+                batch=batch,
+                user=user,
+                type='IN',
+                quantity=validated_data['quantity'],
+                reason='purchase',
+                reference=validated_data.get('reference', ''),
+                notes=validated_data.get('notes', 'Quick stock in'),
+            )
+            txn.save(skip_quantity_update=True)
+
+        return {'batch': batch, 'transaction': txn}
+
+
+class QuickOutSerializer(serializers.Serializer):
+    """
+    Quick Stock Out: Auto-select batches using FEFO and deduct stock.
+    Simplified workflow for issuing stock.
+    """
+    product_id = serializers.UUIDField()
+    quantity = serializers.IntegerField(min_value=1)
+    reason = serializers.ChoiceField(choices=InventoryTransaction.REASON_CHOICES, default='sale')
+    reference = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        from apps.products.models import Product
+        user = self.context['request'].user
+
+        # Validate product exists and belongs to user's business
+        try:
+            product = Product.objects.get(id=attrs['product_id'], business=user.business)
+        except Product.DoesNotExist:
+            raise serializers.ValidationError({'product_id': 'Product not found'})
+
+        # Check total available stock
+        total_stock = product.total_stock
+        if total_stock < attrs['quantity']:
+            raise serializers.ValidationError({
+                'quantity': f'Insufficient stock. Available: {total_stock}'
+            })
+
+        attrs['product'] = product
+        return attrs
+
+    def create(self, validated_data):
+        user = self.context['request'].user
+        product = validated_data['product']
+        quantity_to_deduct = validated_data['quantity']
+
+        # Get batches ordered by expiry date (FEFO - First Expiry First Out)
+        # Batches with null expiry_date come last
+        batches = Batch.objects.filter(
+            product=product,
+            quantity__gt=0
+        ).order_by('expiry_date')
+
+        transactions = []
+        remaining = quantity_to_deduct
+
+        with transaction.atomic():
+            for batch in batches:
+                if remaining <= 0:
+                    break
+
+                # Deduct from this batch
+                deduct_qty = min(batch.quantity, remaining)
+
+                txn = InventoryTransaction.objects.create(
+                    batch=batch,
+                    user=user,
+                    type='OUT',
+                    quantity=deduct_qty,
+                    reason=validated_data['reason'],
+                    reference=validated_data.get('reference', ''),
+                    notes=validated_data.get('notes', 'Quick stock out'),
+                )
+                transactions.append(txn)
+                remaining -= deduct_qty
+
+        return {
+            'product': product,
+            'total_deducted': quantity_to_deduct,
+            'transactions': transactions,
+            'batches_affected': len(transactions),
+        }

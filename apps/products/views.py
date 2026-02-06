@@ -93,3 +93,39 @@ class ProductViewSet(BusinessFilterMixin, viewsets.ModelViewSet):
                 {'detail': 'Product not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+    @extend_schema(
+        description='Fast product autocomplete for search',
+        parameters=[
+            OpenApiParameter(name='q', description='Search query (name or barcode)', required=True),
+        ],
+        responses={200: list}
+    )
+    @action(detail=False, methods=['get'])
+    def autocomplete(self, request):
+        """
+        Fast product autocomplete returning minimal data.
+        Returns id, name, barcode, stock for up to 10 matches.
+        """
+        query = request.query_params.get('q', '').strip()
+        if len(query) < 1:
+            return Response([])
+
+        products = self.get_queryset().filter(
+            models.Q(name__icontains=query) |
+            models.Q(barcode__icontains=query)
+        ).select_related('category')[:10]
+
+        results = [
+            {
+                'id': str(p.id),
+                'name': p.name,
+                'barcode': p.barcode,
+                'stock': p.total_stock,
+                'unit': p.unit,
+                'category_name': p.category.name if p.category else None,
+            }
+            for p in products
+        ]
+
+        return Response(results)

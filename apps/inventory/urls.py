@@ -7,6 +7,8 @@ from .views import (
     OutwardView,
     AdjustView,
     LabelViewSet,
+    QuickInView,
+    QuickOutView,
 )
 
 router = DefaultRouter()
@@ -19,4 +21,6 @@ urlpatterns = [
     path('inventory/inward/', InwardView.as_view(), name='inventory-inward'),
     path('inventory/outward/', OutwardView.as_view(), name='inventory-outward'),
     path('inventory/adjust/', AdjustView.as_view(), name='inventory-adjust'),
+    path('inventory/quick-in/', QuickInView.as_view(), name='inventory-quick-in'),
+    path('inventory/quick-out/', QuickOutView.as_view(), name='inventory-quick-out'),
 ]

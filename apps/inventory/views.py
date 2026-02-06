@@ -19,6 +19,8 @@ from .serializers import (
     OutwardSerializer,
     AdjustmentSerializer,
     LabelSerializer,
+    QuickInSerializer,
+    QuickOutSerializer,
 )
 
 
@@ -213,3 +215,57 @@ class LabelViewSet(viewsets.ModelViewSet):
         if user.is_authenticated and user.business:
             queryset = queryset.filter(batch__product__business=user.business)
         return queryset
+
+
+class QuickInView(APIView):
+    """
+    Quick Stock In: Create batch + record inward in one API call.
+    Combines batch creation and stock inward for faster workflow.
+    """
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=QuickInSerializer,
+        responses={201: dict},
+        description='Quick stock in: create batch and record inward in one call'
+    )
+    def post(self, request):
+        serializer = QuickInSerializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        result = serializer.save()
+
+        batch = result['batch']
+        txn = result['transaction']
+
+        return Response({
+            'message': 'Stock received successfully',
+            'batch': BatchSerializer(batch).data,
+            'transaction': TransactionSerializer(txn).data,
+        }, status=status.HTTP_201_CREATED)
+
+
+class QuickOutView(APIView):
+    """
+    Quick Stock Out: Auto-select batches using FEFO and deduct stock.
+    Automatically picks batches with earliest expiry dates first.
+    """
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=QuickOutSerializer,
+        responses={201: dict},
+        description='Quick stock out: auto-select batches (FEFO) and deduct stock'
+    )
+    def post(self, request):
+        serializer = QuickOutSerializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+        result = serializer.save()
+
+        return Response({
+            'message': 'Stock issued successfully',
+            'product_id': str(result['product'].id),
+            'product_name': result['product'].name,
+            'total_deducted': result['total_deducted'],
+            'batches_affected': result['batches_affected'],
+            'transactions': TransactionSerializer(result['transactions'], many=True).data,
+        }, status=status.HTTP_201_CREATED)
